@@ -56,8 +56,8 @@ func (pi *PrerequisitesInstaller) InstallAll(ctx context.Context) error {
 		return pi.WaitForDriver(ctx, 5*time.Minute)
 	}
 
-	if err := pi.ensureNamespaceGone(ctx); err != nil {
-		return fmt.Errorf("failed to ensure clean namespace state: %w", err)
+	if err := pi.cleanupStaleNamespace(ctx); err != nil {
+		return fmt.Errorf("failed to clean up stale namespace: %w", err)
 	}
 
 	if err := pi.cloneUpstreamRepo(ctx); err != nil {
@@ -131,12 +131,12 @@ func (pi *PrerequisitesInstaller) cloneUpstreamRepo(ctx context.Context) error {
 	return nil
 }
 
-// ensureNamespaceGone guarantees the driver namespace is fully deleted before
-// a fresh install begins. This handles the race where a previous run's cleanup
-// left the namespace in Terminating state (async GC of finalizers, Helm
-// release Secrets, or DaemonSet pods). It also runs a best-effort
-// helm uninstall to clear any stale release that would block re-creation.
-func (pi *PrerequisitesInstaller) ensureNamespaceGone(ctx context.Context) error {
+// cleanupStaleNamespace removes any leftover Helm release and namespace from a
+// previous test run, waiting for the namespace to fully terminate before
+// returning. This handles the race where a previous run's cleanup left the
+// namespace in Terminating state (async GC of finalizers, Helm release Secrets,
+// or DaemonSet pods).
+func (pi *PrerequisitesInstaller) cleanupStaleNamespace(ctx context.Context) error {
 	ns, err := pi.client.CoreV1().Namespaces().Get(ctx, driverNamespace, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		return nil
@@ -148,9 +148,7 @@ func (pi *PrerequisitesInstaller) ensureNamespaceGone(ctx context.Context) error
 	framework.Logf("Namespace %s exists (phase=%s), cleaning up before fresh install...", driverNamespace, ns.Status.Phase)
 
 	if ns.Status.Phase != corev1.NamespaceTerminating {
-		cmd := exec.CommandContext(ctx, "helm", "uninstall", driverRelease,
-			"--namespace", driverNamespace, "--wait", "--timeout", "2m")
-		output, helmErr := cmd.CombinedOutput()
+		output, helmErr := pi.helmUninstall(ctx, "2m")
 		if helmErr != nil && !strings.Contains(string(output), "not found") {
 			framework.Logf("Warning: helm uninstall during pre-cleanup: %v (output: %s)", helmErr, strings.TrimSpace(string(output)))
 		}
@@ -166,6 +164,10 @@ func (pi *PrerequisitesInstaller) ensureNamespaceGone(ctx context.Context) error
 		if errors.IsNotFound(getErr) {
 			framework.Logf("Namespace %s fully removed", driverNamespace)
 			return true, nil
+		}
+		if getErr != nil {
+			framework.Logf("Error checking namespace %s (will retry): %v", driverNamespace, getErr)
+			return false, nil
 		}
 		framework.Logf("Namespace %s still exists, waiting for GC...", driverNamespace)
 		return false, nil
@@ -248,6 +250,15 @@ func (pi *PrerequisitesInstaller) grantSCCPermissions(ctx context.Context) error
 	}
 	framework.Logf("SCC permissions granted to %s/%s", driverNamespace, driverServiceAccount)
 	return nil
+}
+
+// helmUninstall runs helm uninstall for the driver release with the given
+// timeout. It returns the combined output and any error so callers can decide
+// how to handle failures (fatal vs. best-effort).
+func (pi *PrerequisitesInstaller) helmUninstall(ctx context.Context, timeout string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "helm", "uninstall", driverRelease,
+		"--namespace", driverNamespace, "--wait", "--timeout", timeout)
+	return cmd.CombinedOutput()
 }
 
 // commonHelmArgs returns the base set of Helm arguments shared by install and
@@ -426,11 +437,7 @@ func (pi *PrerequisitesInstaller) IsDriverInstalled(ctx context.Context) bool {
 func (pi *PrerequisitesInstaller) UninstallAll(ctx context.Context) error {
 	framework.Logf("=== Cleaning up DRA Example Driver ===")
 
-	cmd := exec.CommandContext(ctx, "helm", "uninstall", driverRelease,
-		"--namespace", driverNamespace,
-		"--wait",
-		"--timeout", "5m")
-	output, err := cmd.CombinedOutput()
+	output, err := pi.helmUninstall(ctx, "5m")
 	if err != nil && !strings.Contains(string(output), "not found") {
 		framework.Logf("Warning: helm uninstall failed: %v\nOutput: %s", err, string(output))
 	}
@@ -458,9 +465,7 @@ func (pi *PrerequisitesInstaller) UninstallAll(ctx context.Context) error {
 func (pi *PrerequisitesInstaller) RollbackMutations(ctx context.Context) {
 	framework.Logf("Rolling back DRA example driver cluster mutations (best-effort)...")
 
-	cmd := exec.CommandContext(ctx, "helm", "uninstall", driverRelease,
-		"--namespace", driverNamespace, "--wait", "--timeout", "2m")
-	output, err := cmd.CombinedOutput()
+	output, err := pi.helmUninstall(ctx, "2m")
 	if err != nil && !strings.Contains(string(output), "not found") {
 		framework.Logf("Warning: helm uninstall during rollback: %v (output: %s)", err, strings.TrimSpace(string(output)))
 	}

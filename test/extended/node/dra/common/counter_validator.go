@@ -12,6 +12,12 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 )
 
+func (cv *CounterValidator) listOptions() metav1.ListOptions {
+	return metav1.ListOptions{
+		FieldSelector: resourceapi.ResourceSliceSelectorDriver + "=" + cv.driverName,
+	}
+}
+
 // CounterValidator provides helpers for validating ResourceSlice counter
 // structures introduced by the DRAPartitionableDevices feature (KEP-4815).
 // It separates ResourceSlices into counter slices (SharedCounters only) and
@@ -31,19 +37,16 @@ func NewCounterValidator(client kubernetes.Interface, driverName string) *Counte
 }
 
 // GetResourceSlicesByType lists all ResourceSlices for the driver and separates
-// them into counter slices (have SharedCounters, no Devices) and device slices
-// (have Devices, may have ConsumesCounters).
+// them into counter slices (have SharedCounters but no Devices) and device slices
+// (have Devices, may have ConsumesCounters on individual devices).
 func (cv *CounterValidator) GetResourceSlicesByType(ctx context.Context) (counterSlices, deviceSlices []resourceapi.ResourceSlice, err error) {
-	sliceList, err := cv.client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
+	sliceList, err := cv.client.ResourceV1().ResourceSlices().List(ctx, cv.listOptions())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list ResourceSlices: %w", err)
 	}
 
 	for _, slice := range sliceList.Items {
-		if slice.Spec.Driver != cv.driverName {
-			continue
-		}
-		if len(slice.Spec.SharedCounters) > 0 {
+		if len(slice.Spec.SharedCounters) > 0 && len(slice.Spec.Devices) == 0 {
 			counterSlices = append(counterSlices, slice)
 		}
 		if len(slice.Spec.Devices) > 0 {
@@ -111,8 +114,10 @@ func (cv *CounterValidator) ValidateDeviceConsumesCounters(ctx context.Context) 
 	return nil
 }
 
-// CountPartitionDevices returns the number of devices whose names contain
-// "partition" across all device slices for the driver.
+// CountPartitionDevices returns the number of partition devices across all
+// device slices for the driver. The upstream dra-example-driver names partition
+// devices as "gpu-N-partition-M" when gpuPartitions > 0, so the substring
+// "partition" reliably identifies them within this driver's naming convention.
 func (cv *CounterValidator) CountPartitionDevices(ctx context.Context) (int, error) {
 	_, deviceSlices, err := cv.GetResourceSlicesByType(ctx)
 	if err != nil {
@@ -145,7 +150,7 @@ func (cv *CounterValidator) HasSharedCounters(ctx context.Context) bool {
 // taints would prevent regular test pods from being scheduled there. Falls
 // back to any node with devices if no untainted node is found.
 func (cv *CounterValidator) GetNodeWithDevices(ctx context.Context) (string, error) {
-	sliceList, err := cv.client.ResourceV1().ResourceSlices().List(ctx, metav1.ListOptions{})
+	sliceList, err := cv.client.ResourceV1().ResourceSlices().List(ctx, cv.listOptions())
 	if err != nil {
 		return "", fmt.Errorf("failed to list ResourceSlices: %w", err)
 	}
@@ -167,7 +172,7 @@ func (cv *CounterValidator) GetNodeWithDevices(ctx context.Context) (string, err
 
 	var fallback string
 	for _, slice := range sliceList.Items {
-		if slice.Spec.Driver != cv.driverName || slice.Spec.NodeName == nil || *slice.Spec.NodeName == "" {
+		if slice.Spec.NodeName == nil || *slice.Spec.NodeName == "" {
 			continue
 		}
 		name := *slice.Spec.NodeName

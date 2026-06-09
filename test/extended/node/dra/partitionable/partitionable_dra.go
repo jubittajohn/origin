@@ -181,20 +181,25 @@ var _ = g.Describe("[sig-scheduling][OCPFeatureGate:DRAPartitionableDevices][Fea
 
 			g.By("Creating DeviceClass for partitionable driver")
 			deviceClass := builder.BuildDeviceClass(deviceClassName)
-			err := dracommon.CreateDeviceClass(ctx, oc.KubeFramework().DynamicClient, deviceClass)
+			err := dracommon.CreateDeviceClass(ctx, oc.KubeFramework().ClientSet, deviceClass)
 			framework.ExpectNoError(err, "Failed to create DeviceClass")
 			defer func() {
-				if delErr := dracommon.DeleteDeviceClass(ctx, oc.KubeFramework().DynamicClient, deviceClassName); delErr != nil {
+				if delErr := dracommon.DeleteDeviceClass(ctx, oc.KubeFramework().ClientSet, deviceClassName); delErr != nil {
 					framework.Logf("Warning: failed to delete DeviceClass %s: %v", deviceClassName, delErr)
 				}
 			}()
 
+			// Partitions are requested implicitly: with gpuPartitions enabled, the
+			// driver publishes both full-GPU and partition devices. The DRA scheduler
+			// allocates partition devices because they consume fewer shared counters.
+			// The assertion at the end of this test verifies the allocated devices
+			// are partitions (contain "partition" in their name), not full GPUs.
 			g.By("Creating ResourceClaim requesting 2 partition devices")
 			claim := builder.BuildResourceClaim(claimName, deviceClassName, 2)
-			err = dracommon.CreateResourceClaim(ctx, oc.KubeFramework().DynamicClient, oc.Namespace(), claim)
+			err = dracommon.CreateResourceClaim(ctx, oc.KubeFramework().ClientSet, oc.Namespace(), claim)
 			framework.ExpectNoError(err, "Failed to create ResourceClaim")
 			defer func() {
-				if delErr := dracommon.DeleteResourceClaim(ctx, oc.KubeFramework().DynamicClient, oc.Namespace(), claimName); delErr != nil {
+				if delErr := dracommon.DeleteResourceClaim(ctx, oc.KubeFramework().ClientSet, oc.Namespace(), claimName); delErr != nil {
 					framework.Logf("Warning: failed to delete ResourceClaim %s/%s: %v", oc.Namespace(), claimName, delErr)
 				}
 			}()
@@ -219,7 +224,7 @@ var _ = g.Describe("[sig-scheduling][OCPFeatureGate:DRAPartitionableDevices][Fea
 
 			g.By("Verifying allocated devices are partitions (not full GPUs)")
 			allocatedClaim, err := oc.KubeFramework().ClientSet.ResourceV1().ResourceClaims(oc.Namespace()).Get(ctx, claimName, metav1.GetOptions{})
-			framework.ExpectNoError(err)
+			framework.ExpectNoError(err, "Failed to get ResourceClaim %s for partition verification", claimName)
 			for _, result := range allocatedClaim.Status.Allocation.Devices.Results {
 				o.Expect(result.Device).To(o.ContainSubstring("partition"),
 					"Expected partition device but got %q", result.Device)
@@ -241,10 +246,10 @@ var _ = g.Describe("[sig-scheduling][OCPFeatureGate:DRAPartitionableDevices][Fea
 
 			g.By("Creating DeviceClass")
 			deviceClass := builder.BuildDeviceClass(deviceClassName)
-			err = dracommon.CreateDeviceClass(ctx, oc.KubeFramework().DynamicClient, deviceClass)
+			err = dracommon.CreateDeviceClass(ctx, oc.KubeFramework().ClientSet, deviceClass)
 			framework.ExpectNoError(err)
 			defer func() {
-				if delErr := dracommon.DeleteDeviceClass(ctx, oc.KubeFramework().DynamicClient, deviceClassName); delErr != nil {
+				if delErr := dracommon.DeleteDeviceClass(ctx, oc.KubeFramework().ClientSet, deviceClassName); delErr != nil {
 					framework.Logf("Warning: failed to delete DeviceClass %s: %v", deviceClassName, delErr)
 				}
 			}()
@@ -260,10 +265,10 @@ var _ = g.Describe("[sig-scheduling][OCPFeatureGate:DRAPartitionableDevices][Fea
 			// only allocate devices from ResourceSlices on the pinned node.
 			g.By(fmt.Sprintf("Creating ResourceClaim requesting %d devices to exhaust all counters on node %s", totalPartitionsPerNode, nodeName))
 			exhaustClaim := builder.BuildResourceClaim(exhaustClaimName, deviceClassName, totalPartitionsPerNode)
-			err = dracommon.CreateResourceClaim(ctx, oc.KubeFramework().DynamicClient, oc.Namespace(), exhaustClaim)
+			err = dracommon.CreateResourceClaim(ctx, oc.KubeFramework().ClientSet, oc.Namespace(), exhaustClaim)
 			framework.ExpectNoError(err)
 			defer func() {
-				if delErr := dracommon.DeleteResourceClaim(ctx, oc.KubeFramework().DynamicClient, oc.Namespace(), exhaustClaimName); delErr != nil {
+				if delErr := dracommon.DeleteResourceClaim(ctx, oc.KubeFramework().ClientSet, oc.Namespace(), exhaustClaimName); delErr != nil {
 					framework.Logf("Warning: failed to delete ResourceClaim %s/%s: %v", oc.Namespace(), exhaustClaimName, delErr)
 				}
 			}()
@@ -292,16 +297,18 @@ var _ = g.Describe("[sig-scheduling][OCPFeatureGate:DRAPartitionableDevices][Fea
 
 			g.By("Creating overflow claim requesting 1 more device")
 			overflowClaim := builder.BuildResourceClaim(overflowClaimName, deviceClassName, 1)
-			err = dracommon.CreateResourceClaim(ctx, oc.KubeFramework().DynamicClient, oc.Namespace(), overflowClaim)
+			err = dracommon.CreateResourceClaim(ctx, oc.KubeFramework().ClientSet, oc.Namespace(), overflowClaim)
 			framework.ExpectNoError(err)
 			defer func() {
-				if delErr := dracommon.DeleteResourceClaim(ctx, oc.KubeFramework().DynamicClient, oc.Namespace(), overflowClaimName); delErr != nil {
+				if delErr := dracommon.DeleteResourceClaim(ctx, oc.KubeFramework().ClientSet, oc.Namespace(), overflowClaimName); delErr != nil {
 					framework.Logf("Warning: failed to delete ResourceClaim %s/%s: %v", oc.Namespace(), overflowClaimName, delErr)
 				}
 			}()
 
 			g.By("Creating overflow pod pinned to same node — should be unschedulable")
 			overflowPod := builder.BuildPodWithClaim(overflowPodName, overflowClaimName, "")
+			// NodeSelector is load-bearing: counter exhaustion is per-node, not cluster-wide.
+			// Without it, the DRA scheduler could allocate from a different node's counters.
 			overflowPod.Spec.NodeSelector = map[string]string{
 				"kubernetes.io/hostname": nodeName,
 			}
