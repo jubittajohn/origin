@@ -5480,21 +5480,18 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.openshift.api.config.v1alpha1.RemoteWriteAuthorization
   map:
     fields:
+    - name: authorization
+      type:
+        namedType: com.github.openshift.api.config.v1alpha1.SecretKeySelector
+      default: {}
     - name: basicAuth
       type:
         namedType: com.github.openshift.api.config.v1alpha1.BasicAuth
-      default: {}
-    - name: bearerToken
-      type:
-        namedType: com.github.openshift.api.config.v1alpha1.SecretKeySelector
       default: {}
     - name: oauth2
       type:
         namedType: com.github.openshift.api.config.v1alpha1.OAuth2
       default: {}
-    - name: safeAuthorization
-      type:
-        namedType: io.k8s.api.core.v1.SecretKeySelector
     - name: sigv4
       type:
         namedType: com.github.openshift.api.config.v1alpha1.Sigv4
@@ -5505,14 +5502,12 @@ var schemaYAML = typed.YAMLObject(`types:
     unions:
     - discriminator: type
       fields:
+      - fieldName: authorization
+        discriminatorValue: Authorization
       - fieldName: basicAuth
         discriminatorValue: BasicAuth
-      - fieldName: bearerToken
-        discriminatorValue: BearerToken
       - fieldName: oauth2
         discriminatorValue: OAuth2
-      - fieldName: safeAuthorization
-        discriminatorValue: SafeAuthorization
       - fieldName: sigv4
         discriminatorValue: Sigv4
 - name: com.github.openshift.api.config.v1alpha1.RemoteWriteSpec
