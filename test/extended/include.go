@@ -18,6 +18,7 @@ import (
 	_ "github.com/openshift/origin/test/extended/clusterversion"
 	_ "github.com/openshift/origin/test/extended/cmd"
 	_ "github.com/openshift/origin/test/extended/config_operator"
+	_ "github.com/openshift/origin/test/extended/console"
 	_ "github.com/openshift/origin/test/extended/controller_manager"
 	_ "github.com/openshift/origin/test/extended/coreos"
 	_ "github.com/openshift/origin/test/extended/cpu_partitioning"
